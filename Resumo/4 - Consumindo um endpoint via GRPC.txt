@@ -1,0 +1,85 @@
+Consumindo um endpoint via GRPC:
+
+Agora vamos criar uma aplicação Cliente, ou seja, que vai consumir o Serviço de um Servidor. Aplicação desse tipo faz o mesmo papel da ferramenta BloomRPC. Para a criação deste Client vamos utilizar o Micronaut, ou seja, agora vamos usar suas anotações para facilitar (no nosso primeiro cliente criamos sem essas anotações).
+Vamos criar um novo projeto pelo Micronaut Lauch, com nome fretes-rest (é comum aplicações REST consumir serviços de um Servidor RPC). O projeto será do tipo gRPC Applicatio, Java na versão 11, mas a linguagem será Kotlin, com Build em Gradle e Test em Junit. 
+Agora na aplicação vamos ter que criar um cliente (Client), só que quem sabe criar um cliente para um serviço X é a classe gerada da descrição/contrato do serviço X, ou seja, se queremos criar um Cliente para o FretesService (serviço descrito no arquivo .proto) vamos ter que pedir para a classe FretesServiceGrpc criar um cliente. O problema é que só temos acesso a classe FretesServiceGrpc ao compilar o arquivo .proto, logo teremos que gerar uma cópia do arquivo .proto do projeto fretes e colocar no projeto frete-rest. (O arquivo .proto tem que estar no servidor e no client)
+
+Obs: Sempre que tivermos que criar um objeto de uma classe que não foi feita por nós (diretamente, em arquivo .class ) teremos que usar um builder() ou algo do tipo da classe gerada da compilação do arquivo .proto, por exemplo classe de Response, Client, etc. Nessa nossa aplicação teremos que utilizar os métodos da classe FuncionarioServiceGrpc.
+
+Nossa aplicação será uma API REST, mas que vai ter dependencias do gRPC Client (apenas do Client). A aplicação vai funcionar assim: vamos bater em um método X da classe Controller e nesse método vamos criar um cliente do gRPC, com esse cliente vamos consumir um serviço de FreteService, e a resposta desse serviço será enviada para o cliente que requisitou nossa API REST. Siga o passo a passo:
+
+1) Crie o projeto chamado fretes-rest;
+
+2) Copie o arquivo ".proto" do projeto fretes e cole nesse novo projeto, o fretes-rest. Agora basta rodar a task do Gradle: Gradlw Clean CompileJava;
+
+3) Vamos agora criar uma fábrica que sabe criar um gRPC Client. A classe para isso se chamará GrpcFactory, essa deverá ser anotada com @Factory. Ainda nessa classe vamos criar a função freteClientStub, essa função será anotada com @Singleton, terá um parâmetro do tipo ManagedChannel anotado com @GrpcChannel e retornará FreteServiceGrpc.FreteServiceBlockingStub. Esse retorno é uma implementação do serviço descrito no arquivo .proto ( FreteServiceGrpc foi a classe do serviço descrito no .proto, e o  FreteServiceBlockingStub é uma classe de stub gerada pelo framework).
+A classe com seu método ficará assim:
+
+//Com essa classe o Micronaut agora poderá criar/injetar/gerenciar um objeto Cliente para consumir o Serviço FretesService (esse serviço é descrito no arquivo .proto no projeto Fretes)
+
+@Factory
+class GrpcClientFactory {
+
+    @Singleton
+    fun fretesClientStub(@GrpcChannel("fretes") channel: ManagedChannel): FretesServiceGrpc.FretesServiceBlockingStub {
+        return FretesServiceGrpc.newBlockingStub(channel)
+    }
+
+}
+Obs: Esse nome dado ao Channel é um apelido, podemos dar qualquer um.
+
+4) O channel nada mais é que configurações de acesso ao endpoint do gRPC, logo teremos que descrever essas configurações no arquivo application.yml. Vamos aprovietar e definir algumas configurações do cliente que vamos criar. Ficando assim:
+
+grpc:
+  client:
+    plaintext: true
+    max-retry-attempts: 10
+  channels:
+    fretes:
+      address: 'localhost:50051'
+      plaintext: true
+        max-retry-attempts: 5
+
+Nessa configuração usamos o mesmo apelido dado ao Channel no passo de número 3;
+
+5) Agora vamos criar uma classe controller, pois a requisição que bater nessa classe vai gerar a consumação do serviço de fretes, ou seja, será dentro de um método que responde a um requisição REST que vamos criar o client gRPC e fazer esse consumir o serviço do servidor de gRPC. Vamos criar a classe CalculadoraDeFreteController, anotada com @Controller;
+
+6) Na classe CalculadoraDeFreteController, criar a função calcula, será uma função do tipo @Get, que recebera via Query Parameter um CEP para assim poder consumir o serviço gRPC Fretes. A função calcula retornará um objeto do tipo FreteResponse e esse terá o valor do frete e o CEP informado pelo usuário. A classe e seu método ficará assim:
+
+//Só será possível fazer o @Inject do objeto, pois criamos a classe GrpcClientFactory!
+@Controller
+class CalculadoraDeFreteController(@Inject val gRpcClient: FretesServiceGrpc.FretesServiceBlockingStub) {
+
+    @Get("/api/fretes")
+    fun calcula(@QueryValue(defaultValue = "") cep: String): FreteDto {
+
+        val request = FreteRequest.newBuilder()
+            .setCep(cep)
+            .build()
+
+        val response = gRpcClient.calculaFrete(request)
+
+        return FreteDto(response.cep, response.valor)
+    }
+}
+
+7) Vamos retornar ao usuário a classe FreteDto, logo temos que criá-la, ficando assim:
+
+data class FreteDto(
+    val cep: String,
+    val frete: Double
+) {
+}
+
+8) Agora vamos ter que configurar no arquivo build.gradle para rodar a aplicação. Ficando assim:
+Na seção micronaut adicionar a linha: 
+	runtime "netty"
+Na seção dependencies adicionar a linha:
+	implementation("io.micronaut.grpc:micronaut-grpc-client-runtime")
+Na seção dependencies remover/comentar a linha:
+	implementation("io.micronaut.grpc:micronaut-grpc-runtime")
+
+9) Agora podemos testar nosso cliente, para isso a aplicação fretes e fretes-rest devem estar rodando. Depois basta ir no Postman e fazer uma requsição para: localhost:8080/api/fretes?cep=123456
+
+
+
